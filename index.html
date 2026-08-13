@@ -211,7 +211,55 @@
 <body>
 <div id="app"></div>
 
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore-compat.js"></script>
 <script>
+// --- Configuration Firebase : projet existant "ascension-game-370c0" ---
+// On réutilise le même projet que le jeu Ascension, mais dans une collection
+// Firestore complètement séparée (duel_eclair_sessions), isolée de "users" et
+// "friends" — ce jeu ne touche jamais aux comptes déjà inscrits.
+const firebaseConfig = {
+  apiKey: "AIzaSyBk6XKD0_nuGXO5EtuGqe9LiOVEgNEtC8g",
+  authDomain: "ascension-game-370c0.firebaseapp.com",
+  projectId: "ascension-game-370c0",
+  storageBucket: "ascension-game-370c0.firebasestorage.app",
+  messagingSenderId: "57942969538",
+  appId: "1:57942969538:web:450cb74c51f985e9c5bf5b",
+};
+const FIRESTORE_COLLECTION = 'duel_eclair_sessions';
+
+const HAS_CLAUDE_STORAGE = (typeof window.storage !== 'undefined' && window.storage !== null);
+let firebaseDb = null;
+if(!HAS_CLAUDE_STORAGE && typeof firebase !== 'undefined'){
+  try{
+    if(!firebase.apps.length) firebase.initializeApp(firebaseConfig);
+    firebaseDb = firebase.firestore();
+  }catch(err){ console.error('Firebase init failed', err); }
+}
+const STORAGE_AVAILABLE = HAS_CLAUDE_STORAGE || !!firebaseDb;
+
+const storageAdapter = {
+  async get(key, shared){
+    if(HAS_CLAUDE_STORAGE) return window.storage.get(key, shared);
+    if(firebaseDb){
+      const doc = await firebaseDb.collection(FIRESTORE_COLLECTION).doc(key).get();
+      if(!doc.exists) return null;
+      return { key, value: doc.data().value, shared: !!shared };
+    }
+    return null;
+  },
+  async set(key, value, shared){
+    if(HAS_CLAUDE_STORAGE) return window.storage.set(key, value, shared);
+    if(firebaseDb){
+      await firebaseDb.collection(FIRESTORE_COLLECTION).doc(key).set({
+        value, updatedAt: firebase.firestore.FieldValue.serverTimestamp(),
+      });
+      return { key, value, shared: !!shared };
+    }
+    return null;
+  },
+};
+
 const SYMBOLS = [
   {ch:'●', color:'#7cf5ff'},
   {ch:'■', color:'#b98bff'},
@@ -222,8 +270,6 @@ const SYMBOLS = [
 const ROUND_LENGTHS = [3,3,4,4,5];
 const TOTAL_ROUNDS = ROUND_LENGTHS.length;
 const PENALTY_MS = 350;
-
-const STORAGE_AVAILABLE = (typeof window.storage !== 'undefined' && window.storage !== null);
 
 let state = {
   screen: 'landing', // landing, create-wait, join, waiting-opp, countdown, sequence, input, round-wait, round-result, finished
@@ -301,7 +347,7 @@ function renderLanding(app){
     wrap.appendChild(err);
   }
   if(!STORAGE_AVAILABLE){
-    const warn = el('div', null, '⚠ Stockage indisponible ici. Ouvre ce jeu depuis l\'aperçu Claude (pas un fichier téléchargé ouvert directement dans le navigateur) pour pouvoir jouer à deux.');
+    const warn = el('div', null, '⚠ Connexion au stockage impossible. Vérifie que les règles Firestore autorisent bien la collection "duel_eclair_sessions".');
     warn.style.color = 'var(--gold)'; warn.style.textAlign='center'; warn.style.marginTop='18px'; warn.style.fontSize='0.8rem'; warn.style.lineHeight='1.5';
     wrap.appendChild(warn);
   }
@@ -531,22 +577,22 @@ function resetState(){
 // ---- storage helpers ----
 async function saveSession(){
   try{
-    const result = await window.storage.set(keyFor(state.code), JSON.stringify(state.session), true);
+    const result = await storageAdapter.set(keyFor(state.code), JSON.stringify(state.session), true);
     return !!result;
   }catch(err){ console.error('save failed', err); return false; }
 }
 async function updateSessionRemote(mutator){
   try{
-    const fresh = await window.storage.get(keyFor(state.code), true);
+    const fresh = await storageAdapter.get(keyFor(state.code), true);
     const freshSession = fresh ? JSON.parse(fresh.value) : state.session;
     mutator(freshSession);
     state.session = freshSession;
-    await window.storage.set(keyFor(state.code), JSON.stringify(freshSession), true);
+    await storageAdapter.set(keyFor(state.code), JSON.stringify(freshSession), true);
   }catch(err){ console.error('update failed', err); }
 }
 async function pollSession(){
   try{
-    const res = await window.storage.get(keyFor(state.code), true);
+    const res = await storageAdapter.get(keyFor(state.code), true);
     if(res) state.session = JSON.parse(res.value);
   }catch(err){ /* not found yet, ignore */ }
 }
@@ -558,7 +604,7 @@ function stopPolling(){
 // ---- game flow ----
 async function createGame(){
   if(!STORAGE_AVAILABLE){
-    state.errorMsg = 'Le stockage n\'est pas disponible dans ce contexte. Ouvre le jeu depuis l\'aperçu Claude.';
+    state.errorMsg = 'Connexion au stockage impossible. Vérifie ta connexion ou les règles Firestore.';
     render();
     return;
   }
@@ -591,7 +637,7 @@ async function createGame(){
 
 async function joinGame(codeInput){
   if(!STORAGE_AVAILABLE){
-    state.errorMsg = 'Le stockage n\'est pas disponible dans ce contexte. Ouvre le jeu depuis l\'aperçu Claude.';
+    state.errorMsg = 'Connexion au stockage impossible. Vérifie ta connexion ou les règles Firestore.';
     render();
     return;
   }
@@ -603,7 +649,7 @@ async function joinGame(codeInput){
   let res = null;
   let fetchFailed = false;
   try{
-    res = await window.storage.get(keyFor(codeInput), true);
+    res = await storageAdapter.get(keyFor(codeInput), true);
   }catch(err){
     console.error('get failed', err);
     fetchFailed = true;
