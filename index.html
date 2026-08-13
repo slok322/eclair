@@ -267,12 +267,15 @@ const SYMBOLS = [
   {ch:'◆', color:'#ffd166'},
   {ch:'★', color:'#6bffb8'},
 ];
-const ROUND_LENGTHS = [3,3,4,4,5];
-const TOTAL_ROUNDS = ROUND_LENGTHS.length;
 const PENALTY_MS = 350;
+const ROUND_COUNT_OPTIONS = [3, 5, 7];
+const VARIANTS = {
+  classique: { label: 'Classique', desc: 'Retape la séquence dans l\'ordre' },
+  miroir:    { label: 'Miroir', desc: 'Retape la séquence à l\'envers' },
+};
 
 let state = {
-  screen: 'landing', // landing, create-wait, join, waiting-opp, countdown, sequence, input, round-wait, round-result, finished
+  screen: 'landing', // landing, setup, create-wait, join, bot-diff, countdown, sequence, input, round-wait, round-result, rematch-wait, finished
   code: null,
   playerNum: null,
   session: null,
@@ -285,6 +288,12 @@ let state = {
   lastTapState: null, // {idx, correct}
   pollTimer: null,
   errorMsg: '',
+  mode: null,
+  botLevel: null,
+  roundCount: 5,
+  variant: 'classique',
+  matchId: null,
+  pendingFlow: null,
 };
 
 function keyFor(code){ return `duel-eclair-session:${code}`; }
@@ -294,8 +303,27 @@ function randSeq(len){
   for(let i=0;i<len;i++) arr.push(SYMBOLS[Math.floor(Math.random()*SYMBOLS.length)].ch);
   return arr;
 }
-function generateRounds(){
-  return ROUND_LENGTHS.map(len => ({ sequence: randSeq(len), p1Time: null, p2Time: null, p1Errors:0, p2Errors:0 }));
+function genRoundLengths(n){
+  const arr = [];
+  let len = 3;
+  for(let i=0;i<n;i++){
+    arr.push(len);
+    if((i+1) % 2 === 0 && len < 7) len++;
+  }
+  return arr;
+}
+function generateRounds(n){
+  const lengths = genRoundLengths(n || 5);
+  return lengths.map(len => ({ sequence: randSeq(len), p1Time: null, p2Time: null, p1Errors:0, p2Errors:0 }));
+}
+function totalRounds(){
+  return state.session ? state.session.rounds.length : (state.roundCount || 5);
+}
+function currentVariant(){
+  return (state.session && state.session.variant) ? state.session.variant : (state.variant || 'classique');
+}
+function variantSuffix(){
+  return currentVariant() === 'miroir' ? ' · Mode Miroir' : '';
 }
 
 function render(){
@@ -303,6 +331,7 @@ function render(){
   app.innerHTML = '';
   const screens = {
     'landing': renderLanding,
+    'setup': renderSetup,
     'create-wait': renderCreateWait,
     'join': renderJoin,
     'bot-diff': renderBotDiff,
@@ -311,6 +340,7 @@ function render(){
     'input': renderInput,
     'round-wait': renderRoundWait,
     'round-result': renderRoundResult,
+    'rematch-wait': renderRematchWait,
     'finished': renderFinished,
   };
   (screens[state.screen] || renderLanding)(app);
@@ -331,12 +361,12 @@ function renderLanding(app){
   `;
   const card = el('div', 'card');
   const createBtn = el('button', 'btn-primary', 'Créer une partie');
-  createBtn.onclick = createGame;
+  createBtn.onclick = () => { state.pendingFlow='host'; state.screen='setup'; render(); };
   const joinBtn = el('button', 'btn-secondary', 'Rejoindre avec un code');
   joinBtn.onclick = () => { state.screen='join'; render(); };
   const botBtn = el('button', 'btn-secondary', '🤖 Jouer contre un bot');
   botBtn.style.borderColor = 'rgba(185,139,255,0.4)';
-  botBtn.onclick = () => { state.screen='bot-diff'; render(); };
+  botBtn.onclick = () => { state.pendingFlow='bot'; state.screen='setup'; render(); };
   card.appendChild(createBtn);
   card.appendChild(joinBtn);
   card.appendChild(botBtn);
@@ -351,6 +381,53 @@ function renderLanding(app){
     warn.style.color = 'var(--gold)'; warn.style.textAlign='center'; warn.style.marginTop='18px'; warn.style.fontSize='0.8rem'; warn.style.lineHeight='1.5';
     wrap.appendChild(warn);
   }
+  app.appendChild(wrap);
+}
+
+function renderSetup(app){
+  const wrap = el('div');
+  wrap.innerHTML = `<h1 class="logo">⚡ Duel Éclair</h1><div class="subtitle">Règles de la partie</div>`;
+  const card = el('div','card');
+
+  const roundsLabel = el('div','round-label','Nombre de rounds');
+  card.appendChild(roundsLabel);
+  const roundsRow = el('div','grid-symbols');
+  roundsRow.style.gridTemplateColumns = 'repeat(3, 1fr)';
+  ROUND_COUNT_OPTIONS.forEach(n => {
+    const btn = el('button','sym-btn', String(n));
+    btn.style.fontSize = '1.3rem';
+    btn.style.fontWeight = '800';
+    if(state.roundCount === n) btn.classList.add('correct');
+    btn.onclick = () => { state.roundCount = n; render(); };
+    roundsRow.appendChild(btn);
+  });
+  card.appendChild(roundsRow);
+
+  const variantLabel = el('div','round-label','Variante');
+  variantLabel.style.marginTop = '22px';
+  card.appendChild(variantLabel);
+  Object.keys(VARIANTS).forEach(key => {
+    const v = VARIANTS[key];
+    const btn = el('button', 'btn-secondary');
+    if(state.variant === key){ btn.style.borderColor = 'var(--cyan)'; btn.style.boxShadow = '0 0 16px rgba(124,245,255,0.25)'; }
+    btn.innerHTML = `<div style="font-weight:800;">${v.label}</div><div style="font-size:0.78rem; color:var(--text-dim); font-weight:400; margin-top:2px;">${v.desc}</div>`;
+    btn.onclick = () => { state.variant = key; render(); };
+    card.appendChild(btn);
+  });
+
+  const cont = el('button','btn-primary','Continuer');
+  cont.style.marginTop = '20px';
+  cont.onclick = () => {
+    if(state.pendingFlow === 'host'){ createGame(); }
+    else { state.screen = 'bot-diff'; render(); }
+  };
+  card.appendChild(cont);
+
+  const back = el('button','btn-secondary','Retour');
+  back.onclick = () => { state.pendingFlow=null; state.screen='landing'; render(); };
+  card.appendChild(back);
+
+  wrap.appendChild(card);
   app.appendChild(wrap);
 }
 
@@ -372,7 +449,7 @@ function renderBotDiff(app){
   });
   const back = el('button','btn-secondary','Retour');
   back.style.marginTop = '18px';
-  back.onclick = () => { state.screen='landing'; render(); };
+  back.onclick = () => { state.screen='setup'; render(); };
   card.appendChild(back);
   wrap.appendChild(card);
   app.appendChild(wrap);
@@ -420,7 +497,7 @@ function renderCreateWait(app){
 
 function renderCountdown(app){
   const wrap = el('div');
-  const label = el('div','round-label', `Round ${state.roundIndex+1} / ${TOTAL_ROUNDS}`);
+  const label = el('div','round-label', `Round ${state.roundIndex+1} / ${totalRounds()}${variantSuffix()}`);
   const card = el('div','card');
   card.appendChild(label);
   const num = el('div','countdown-num', state.countdownVal > 0 ? state.countdownVal : 'GO');
@@ -431,7 +508,7 @@ function renderCountdown(app){
 
 function renderSequence(app){
   const wrap = el('div');
-  const label = el('div','round-label', `Round ${state.roundIndex+1} / ${TOTAL_ROUNDS} — Mémorise !`);
+  const label = el('div','round-label', `Round ${state.roundIndex+1} / ${totalRounds()} — Mémorise !`);
   const card = el('div','card');
   card.appendChild(label);
   const stage = el('div','seq-stage');
@@ -455,7 +532,7 @@ function renderSequence(app){
 function renderInput(app){
   const wrap = el('div');
   const seq = state.session.rounds[state.roundIndex].sequence;
-  const label = el('div','round-label', `Round ${state.roundIndex+1} / ${TOTAL_ROUNDS} — À toi de jouer !`);
+  const label = el('div','round-label', `Round ${state.roundIndex+1} / ${totalRounds()} — À toi de jouer !`);
   const card = el('div','card');
   card.appendChild(label);
   const dots = el('div','progress-track');
@@ -475,7 +552,8 @@ function renderInput(app){
     grid.appendChild(btn);
   });
   card.appendChild(grid);
-  const timerLine = el('div','timer-line', state.errorCount > 0 ? `⚠ ${state.errorCount} erreur(s) — pénalité +${state.errorCount*PENALTY_MS}ms` : 'Reproduis la séquence dans l\'ordre');
+  const baseHint = currentVariant() === 'miroir' ? 'Reproduis la séquence à l\'envers' : 'Reproduis la séquence dans l\'ordre';
+  const timerLine = el('div','timer-line', state.errorCount > 0 ? `⚠ ${state.errorCount} erreur(s) — pénalité +${state.errorCount*PENALTY_MS}ms` : baseHint);
   card.appendChild(timerLine);
   wrap.appendChild(card);
   app.appendChild(wrap);
@@ -483,7 +561,7 @@ function renderInput(app){
 
 function renderRoundWait(app){
   const wrap = el('div');
-  const label = el('div','round-label', `Round ${state.roundIndex+1} / ${TOTAL_ROUNDS}`);
+  const label = el('div','round-label', `Round ${state.roundIndex+1} / ${totalRounds()}${variantSuffix()}`);
   const card = el('div','card');
   card.appendChild(label);
   const r = state.session.rounds[state.roundIndex];
@@ -500,7 +578,7 @@ function renderRoundResult(app){
   const wrap = el('div');
   const r = state.session.rounds[state.roundIndex];
   const iWon = state.playerNum === 1 ? r.p1Time < r.p2Time : r.p2Time < r.p1Time;
-  const label = el('div','round-label', `Résultat — Round ${state.roundIndex+1} / ${TOTAL_ROUNDS}`);
+  const label = el('div','round-label', `Résultat — Round ${state.roundIndex+1} / ${totalRounds()}`);
   const card = el('div','card');
   card.appendChild(label);
 
@@ -523,7 +601,7 @@ function renderRoundResult(app){
   `;
   card.appendChild(scoreBar);
 
-  const hint = el('div','hint', state.roundIndex < TOTAL_ROUNDS - 1 ? 'Round suivant dans un instant…' : 'Calcul du résultat final…');
+  const hint = el('div','hint', state.roundIndex < totalRounds() - 1 ? 'Round suivant dans un instant…' : 'Calcul du résultat final…');
   hint.style.marginTop = '16px';
   card.appendChild(hint);
 
@@ -553,9 +631,34 @@ function renderFinished(app){
     <div class="score-item"><div class="score-num" style="color:var(--text-dim)">${theirs}</div><div class="score-lbl">${state.mode==='bot' ? 'Bot' : 'Adversaire'}</div></div>
   `;
   card.appendChild(scoreBar);
-  const btn = el('button','btn-primary','Nouvelle partie');
-  btn.onclick = () => { stopPolling(); resetState(); render(); };
-  card.appendChild(btn);
+
+  const rematchBtn = el('button','btn-primary','🔁 Revanche');
+  rematchBtn.onclick = () => {
+    if(state.mode === 'bot'){
+      startBotGame(state.botLevel);
+    } else {
+      requestRematch();
+    }
+  };
+  card.appendChild(rematchBtn);
+
+  const newGameBtn = el('button','btn-secondary','Nouvelle partie');
+  newGameBtn.onclick = () => { stopPolling(); resetState(); render(); };
+  card.appendChild(newGameBtn);
+
+  wrap.appendChild(card);
+  app.appendChild(wrap);
+}
+
+function renderRematchWait(app){
+  const wrap = el('div');
+  wrap.innerHTML = `<h1 class="logo">⚡ Duel Éclair</h1><div class="subtitle">Revanche demandée</div>`;
+  const card = el('div','card');
+  const wait = el('div','waiting-row','<span class="pulse-dot"></span> En attente que ton adversaire accepte…');
+  card.appendChild(wait);
+  const back = el('button','btn-secondary','Annuler');
+  back.onclick = () => { stopPolling(); resetState(); render(); };
+  card.appendChild(back);
   wrap.appendChild(card);
   app.appendChild(wrap);
 }
@@ -571,7 +674,7 @@ function computeScores(){
 }
 
 function resetState(){
-  state = { ...state, screen:'landing', code:null, playerNum:null, session:null, roundIndex:0, countdownVal:3, seqDisplayIdx:0, inputProgress:0, errorCount:0, startTime:0, lastTapState:null, errorMsg:'', mode:null, botLevel:null };
+  state = { ...state, screen:'landing', code:null, playerNum:null, session:null, roundIndex:0, countdownVal:3, seqDisplayIdx:0, inputProgress:0, errorCount:0, startTime:0, lastTapState:null, errorMsg:'', mode:null, botLevel:null, matchId:null, pendingFlow:null };
 }
 
 // ---- storage helpers ----
@@ -614,8 +717,13 @@ async function createGame(){
     status: 'waiting',
     p1Present: true,
     p2Present: false,
-    rounds: generateRounds(),
+    roundCount: state.roundCount,
+    variant: state.variant,
+    matchId: 1,
+    rematch: { p1:false, p2:false },
+    rounds: generateRounds(state.roundCount),
   };
+  state.matchId = 1;
   const ok = await saveSession();
   if(!ok){
     state.errorMsg = 'Impossible de créer la partie (stockage inaccessible). Réessaie.';
@@ -629,6 +737,7 @@ async function createGame(){
     await pollSession();
     if(state.session && state.session.p2Present){
       stopPolling();
+      state.matchId = state.session.matchId || 1;
       state.roundIndex = 0;
       startCountdown();
     }
@@ -666,6 +775,9 @@ async function joinGame(codeInput){
     state.code = codeInput;
     state.playerNum = 2;
     state.session = session;
+    state.roundCount = session.roundCount || (session.rounds ? session.rounds.length : 5);
+    state.variant = session.variant || 'classique';
+    state.matchId = session.matchId || 1;
     const ok = await saveSession();
     if(!ok){
       state.errorMsg = 'Impossible de rejoindre (échec de connexion). Réessaie.';
@@ -689,7 +801,7 @@ const BOT_PROFILES = {
 };
 
 function botTimeForRound(roundIndex, level){
-  const L = ROUND_LENGTHS[roundIndex];
+  const L = state.session.rounds[roundIndex].sequence.length;
   const profile = BOT_PROFILES[level];
   let errors = 0;
   for(let i=0;i<L;i++){ if(Math.random() < profile.errorChance) errors += 1; }
@@ -702,7 +814,7 @@ function startBotGame(level){
   state.botLevel = level;
   state.playerNum = 1;
   state.code = null;
-  state.session = { status:'playing', p1Present:true, p2Present:true, rounds: generateRounds() };
+  state.session = { status:'playing', p1Present:true, p2Present:true, variant: state.variant, roundCount: state.roundCount, rounds: generateRounds(state.roundCount) };
   state.roundIndex = 0;
   startCountdown();
 }
@@ -750,7 +862,8 @@ function startInputPhase(){
 
 function onTap(ch){
   const seq = state.session.rounds[state.roundIndex].sequence;
-  const expected = seq[state.inputProgress];
+  const idx = currentVariant() === 'miroir' ? (seq.length - 1 - state.inputProgress) : state.inputProgress;
+  const expected = seq[idx];
   if(ch === expected){
     state.lastTapState = {ch, correct:true};
     state.inputProgress += 1;
@@ -768,7 +881,7 @@ function onTap(ch){
 
 function advanceAfterResult(){
   setTimeout(() => {
-    if(state.roundIndex < TOTAL_ROUNDS - 1){
+    if(state.roundIndex < totalRounds() - 1){
       state.roundIndex += 1;
       startCountdown();
     } else {
@@ -815,6 +928,47 @@ async function finishRound(){
       advanceAfterResult();
     }
   }, 1000);
+}
+
+function requestRematch(){
+  const myKey = state.playerNum === 1 ? 'p1' : 'p2';
+  stopPolling();
+  state.screen = 'rematch-wait';
+  render();
+  updateSessionRemote(s => {
+    if(!s.rematch) s.rematch = { p1:false, p2:false };
+    s.rematch[myKey] = true;
+  }).then(() => {
+    if(state.playerNum === 1){
+      state.pollTimer = setInterval(async () => {
+        await pollSession();
+        if(state.session && state.session.rematch && state.session.rematch.p1 && state.session.rematch.p2){
+          stopPolling();
+          const newMatchId = (state.session.matchId || 1) + 1;
+          const newRounds = generateRounds(state.roundCount);
+          await updateSessionRemote(s => {
+            s.rounds = newRounds;
+            s.rematch = { p1:false, p2:false };
+            s.matchId = newMatchId;
+            s.status = 'playing';
+          });
+          state.matchId = newMatchId;
+          state.roundIndex = 0;
+          startCountdown();
+        }
+      }, 1000);
+    } else {
+      state.pollTimer = setInterval(async () => {
+        await pollSession();
+        if(state.session && state.session.matchId && state.session.matchId !== state.matchId){
+          stopPolling();
+          state.matchId = state.session.matchId;
+          state.roundIndex = 0;
+          startCountdown();
+        }
+      }, 1000);
+    }
+  });
 }
 
 render();
